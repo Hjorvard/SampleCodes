@@ -1,0 +1,45 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public static class FallOffGenerator 
+{
+	//2D array for the float
+	//this generates a large block of black in the centre of the plane that fades out into white 
+	//This will be used to generate an ocean border around the outside so I will not have to use walls
+	//to block off the player.
+	//takes in a new variable called size that is used against itself so it can be used when the map is
+	//at different sizes
+	public static float[,] GenerateFOMap(int size)
+	{
+		float[,] map = new float[size, size];
+
+		//for loop to cover each of the points one by one
+		for (int i = 0; i < size; i++)
+		{
+			for (int j = 0; j < size; j++)
+			{
+				float x = i / (float)size * 2 - 1;
+				float y = j / (float)size * 2 - 1;
+
+				float value = Mathf.Max (Mathf.Abs (x), Mathf.Abs (y));
+				//makes I and J both into the evaluate float
+				map [i, j] = Evaluate(value);
+			}
+		}
+		//return the map or this won't work
+		return map;
+	}
+
+	//this creates a constant float that is used in the previous function
+	//essentially changes how drastic the shift from black to white is
+	//set at these values as they gave the best island to  map size
+	static float Evaluate(float value)
+	{
+		float a = 2.5f;
+		float b = 3f;
+
+		//return the value that will be the sum in brackets after, to the power of P
+		return Mathf.Pow (value, a) / (Mathf.Pow (value, a) + (Mathf.Pow (b - b * value, a)));
+	} 
+}
