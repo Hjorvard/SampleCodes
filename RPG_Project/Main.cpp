@@ -15,6 +15,7 @@
 #include "Sound/SoundCue.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Enemy.h"
+#include "MainPlayerController.h"
 
 
 // Sets default values
@@ -68,6 +69,11 @@ AMain::AMain()
 	RunningSpeed = 655.f;
 	SprintingSpeed = 955.f;
 
+	//set the movement bools to false by default
+	//they will only be active as long as the player is moving
+	bMovingForward = false;
+	bMovingRight = false;
+
 	//initialise enums
 	MovementStatus = EMovementStatus::EMS_Normal;
 	StaminaStatus = EStaminaStatus::ESS_Normal;
@@ -86,9 +92,12 @@ AMain::AMain()
 	InterpSpeed = 15.f;
 	//set the interp bool to false by default
 	bInterpToEnemy = false;
-		 
-	
-	
+
+	//set combat target to false by default
+	bHasCombatTarget = false;
+
+	//set the pause menu to false by default
+	bESCDown = false;
 
 }
 
@@ -96,6 +105,9 @@ AMain::AMain()
 void AMain::BeginPlay()
 {
 	Super::BeginPlay();
+
+	//set the controller
+	MainPlayerController = Cast<AMainPlayerController>(GetController());
 	
 }
 
@@ -103,6 +115,10 @@ void AMain::BeginPlay()
 void AMain::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	//if the player is dead, return from the tick function
+	//this will stop the player from being able to do anything after dying
+	if (MovementStatus == EMovementStatus::EMS_Dead) return;
 
 	//how much the stamina should be impacted over time
 	float DeltaStamina = StaminaDrainRate * DeltaTime;
@@ -114,8 +130,8 @@ void AMain::Tick(float DeltaTime)
 		//if the stamina state is normal
 	case EStaminaStatus::ESS_Normal:
 
-		//if the bool saying the shift key / sprint button is down
-		if (bShiftKeyDown)
+		//if the bool saying the shift key / sprint button is down and there's movement
+		if (bShiftKeyDown && bMovingForward == true || bShiftKeyDown && bMovingRight == true)
 		{
 			//if the player's stamina is less than or equal to the minimum amount of stamina needed to sprint
 			//after the calculation from draining stamina
@@ -159,7 +175,7 @@ void AMain::Tick(float DeltaTime)
 	case EStaminaStatus::ESS_BelowMinimum:
 
 		//if the bool saying the shift key / sprint button is down
-		if (bShiftKeyDown)
+		if (bShiftKeyDown && bMovingForward == true || bShiftKeyDown && bMovingRight == true)
 		{
 			//if the player's stamina is less than or equal to 0 after the calculations
 			//to drain stamina from the player whilst sprinting
@@ -209,7 +225,7 @@ void AMain::Tick(float DeltaTime)
 	case EStaminaStatus::ESS_Exhausted:
 
 		//if the player holds down the shift key
-		if (bShiftKeyDown)
+		if (bShiftKeyDown && bMovingForward == true || bShiftKeyDown && bMovingRight == true)
 		{
 			//keep setting the stamina to 0, nothing should happen if you don't rest
 			Stamina = 0.f;
@@ -269,6 +285,19 @@ void AMain::Tick(float DeltaTime)
 		SetActorRotation(InterpRotation);
 	}
 
+	//if the player has a combat target
+	if (CombatTarget)
+	{
+		//set the combat target location variable to the location of the enemy each tick
+		CombatTargetLocation = CombatTarget->GetActorLocation();
+		//check for the player controller
+		if (MainPlayerController)
+		{
+			//get the location of the enemy currently
+			MainPlayerController->EnemyLocation = CombatTargetLocation;
+		}
+	}
+
 }
 
 // Called to bind functionality to input
@@ -294,7 +323,8 @@ void AMain::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 
 	//get the action for jumping
 	//get it for when pressed down
-	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
+	//and when the player is alive
+	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &AMain::Jump);
 	//get the action for jumping, to stop jumping
 	//get it for when the jump button is released
 	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
@@ -316,15 +346,25 @@ void AMain::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 	//when the attack button is released
 	PlayerInputComponent->BindAction("LMB", IE_Released, this, &AMain::LMBUp);
 
+	//get the action for when the pause menu button is pressed
+	//PlayerInputComponent->BindAction("ESC", IE_Pressed, this, &AMain::ESCDown);
+	//get the action for when the pause menu button is released
+	//PlayerInputComponent->BindAction("ESC", IE_Released, this, &AMain::ESCUp);
+	//so the player can unpause the game with the pause button
+	PlayerInputComponent->BindAction("ESC", IE_Pressed, this, &AMain::ESCDown).bExecuteWhenPaused = true;
+	PlayerInputComponent->BindAction("ESC", IE_Released, this, &AMain::ESCUp).bExecuteWhenPaused = true;
 }
 
 //move the player forwards and backwards
 void AMain::MoveForward(float Value)
 {
+	//set bmoving forward to false by default since this gets checked every frame
+	bMovingForward = false;
+
 	//check to see if it's a null pointer, and that the value is not 0
 	//also for now make it check to see if the player is attacking and if they are disable movement
 	//possibly come back to this later to re-enable movement and improve animations
-	if ((Controller != nullptr) && (Value != 0.0f) && !bAttacking)
+	if ((Controller != nullptr) && (Value != 0.0f) && !bAttacking && MovementStatus != EMovementStatus::EMS_Dead)
 	{
 		//find out which way is forward by getting rotation and yaw
 		const FRotator Rotation = Controller->GetControlRotation();
@@ -334,6 +374,9 @@ void AMain::MoveForward(float Value)
 		//add movement input in the direction
 		AddMovementInput(Direction, Value);
 
+		//now there's movement set bmovingforward to true
+		bMovingForward = true;
+
 	}
 
 }
@@ -341,10 +384,13 @@ void AMain::MoveForward(float Value)
 //move the player left and right
 void AMain::MoveRight(float Value)
 {
+	//set bmovingright to false by default, again checked every second
+	bMovingRight = false;
+
 	//check to see if it's a null pointer, and that the value isn't 0
 	//disable moving if attacking
 	//maybe come back to that later
-	if ((Controller != nullptr) && (Value != 0.0f) && !bAttacking)
+	if ((Controller != nullptr) && (Value != 0.0f) && !bAttacking && MovementStatus != EMovementStatus::EMS_Dead)
 	{
 		//find which was is forward
 		const FRotator Rotation = Controller->GetControlRotation();
@@ -353,6 +399,9 @@ void AMain::MoveRight(float Value)
 		const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
 		//add movement input in this direction 
 		AddMovementInput(Direction, Value);
+
+		//now there's movement again set the bmoving right to true
+		bMovingRight = true;
 	}
 }
 
@@ -390,16 +439,22 @@ void AMain::DecrementHealth(float Amount)
 //when the player runs out of health
 void AMain::Die()
 {
+	//if the player is already dead, return out of this function
+	if (MovementStatus == EMovementStatus::EMS_Dead) return;
 	//create a reference to the anim instance
 	UAnimInstance*AnimInstance = GetMesh()->GetAnimInstance();
 	//if we get it and the anim instance it found correctly has the Combat Montage attached
 	if (AnimInstance && CombatMontage)
 	{
 		//then play the combat montage
-		AnimInstance->Montage_Play(CombatMontage, 10.f);
+		AnimInstance->Montage_Play(CombatMontage, 1.0f);
 		//play the death section of the montage
 		AnimInstance->Montage_JumpToSection(FName("Death"));
+		
 	}
+
+	//set the movement status to dead
+	SetMovementStatus(EMovementStatus::EMS_Dead);
 }
 
 //function for when the player collects money
@@ -479,6 +534,9 @@ void AMain::LMBDown()
 {
 	//set the attack button bool to true
 	bLMB = true;
+	
+	//if the movement status is dead then return from this function
+	if (MovementStatus == EMovementStatus::EMS_Dead) return;
 
 	//check to see if the player has a weapon equipped
 	if (EquippedWeapon)
@@ -500,8 +558,8 @@ void AMain::LMBUp()
 //the attack function
 void AMain::Attack()
 {
-	//check to see if we're already attacking
-	if (!bAttacking)
+	//check to see if we're already attacking and that we aren't already dead
+	if (!bAttacking && MovementStatus != EMovementStatus::EMS_Dead)
 	{
 		//set the attacking bool to true
 		bAttacking = true;
@@ -639,6 +697,126 @@ float AMain::TakeDamage(float DamageAmount, struct FDamageEvent const & DamageEv
 	DecrementHealth(DamageAmount);
 	//rturn the damage amount
 	return DamageAmount;
+}
+
+void AMain::DeathEnd()
+{
+	//pause animations at the end of the death animation and stop the skeleton from updating
+	GetMesh()->bPauseAnims = true;
+	GetMesh()->bNoSkeletonUpdate = true;
+}
+
+void AMain::Jump()
+{
+	//if the player's movement status is set to dead
+	if (MovementStatus != EMovementStatus::EMS_Dead)
+	{
+		//don't allow this to happen
+		Super::Jump();
+	}
+}
+
+void AMain::UpdateCombatTarget()
+{
+	//create an array for all the overlapping actors
+	TArray<AActor*> OverlappingActors;
+	//find all the overlapping actors with the player
+	//filter out classes that aren't enemies
+	GetOverlappingActors(OverlappingActors, EnemyFilter);
+
+	//check if there's no overlapping actors
+	if (OverlappingActors.Num() == 0)
+	{
+		//check for the main player controller
+		if (MainPlayerController)
+		{
+			//remove the enemy health bar widget by calling the function to do so
+			MainPlayerController->RemoveEnemyHealthbar();
+		}
+		//and return from this function
+		return;
+	}
+	//Cast to AEnemy to find overlapping actors starting with the closest(hopefully)
+	AEnemy* ClosestEnemy = Cast<AEnemy>(OverlappingActors[0]);
+
+	//if there is an enemy nearby
+	if (ClosestEnemy)
+	{
+		//FVector the the location of the player
+		FVector Location = GetActorLocation();
+		//float for the minimum distance between the player and an enemy
+		//get this by fining the magnitude between the player and the enemy
+		float MinDistance = (ClosestEnemy->GetActorLocation() - Location).Size();
+
+		//create a range based for loop to cycle through the array and see which enemy is closest
+		for (auto Actor : OverlappingActors)
+		{
+			//cast to nearby enemies
+			AEnemy* Enemy = Cast<AEnemy>(Actor);
+			//and if this comes back with an enemy nearby
+			if (Enemy)
+			{
+				//enemy's distance to the player
+				float DistanceToActor = (Enemy->GetActorLocation() - Location).Size();
+
+				//if an enemy is closer than the previous min distance
+				if (DistanceToActor < MinDistance)
+				{
+					//set Min distance to the new closest actor
+					MinDistance = DistanceToActor;
+					//set the new closest enemy to the enemy
+					ClosestEnemy = Enemy;
+				}
+			}
+		}
+		//when the for loop has finished
+		//Check to make sure the player controller is there
+		if (MainPlayerController)
+		{
+			//call the display enemy health bar function
+			MainPlayerController->DisplayEnemyHealthBar();
+		}
+		//set the combat target to the enemy closest to the player
+		SetCombatTarget(ClosestEnemy);
+		//set the enemy as a target bool to true
+		bHasCombatTarget = true;
+
+	}
+}
+
+void AMain::IncrementHealth(float Amount)
+{
+	//if after healing the health goes above the max amount
+	if (Health + Amount >= MaxHealth)
+	{
+		//set health to the max amount
+		Health = MaxHealth;
+	}
+	//if healing doesn't increase health above max health
+	else
+	{
+		//heal by the amount set in the health potion blueprint
+		Health += Amount;
+	}
+}
+
+void AMain::ESCDown()
+{
+	//set the pause menu bool to true
+	bESCDown = true;
+
+	//if we can get to the main player controller
+	if (MainPlayerController)
+	{
+		//call the toggle pause menu fucntion from the main player controller
+		MainPlayerController->TogglePauseMenu();
+	}
+}
+
+void AMain::ESCUp()
+{
+	//set the pause menu button to false
+	bESCDown = false;
 }
 
 
