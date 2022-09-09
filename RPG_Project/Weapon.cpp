@@ -211,6 +211,7 @@ void AWeapon::ActivateCollision()
 	CombatCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 }
 
+
 void AWeapon::DeactivateCollision()
 {
 	//set back to no collision
