@@ -21,7 +21,7 @@
 // Sets default values
 AEnemy::AEnemy()
 {
- 	// Set this character to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
+	// Set this character to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
 
 	//actually create the sphere around the enemy mesh to create the agro range
@@ -64,8 +64,13 @@ AEnemy::AEnemy()
 
 	//box collider for when the enemy attacks
 	CombatCollision = CreateDefaultSubobject<UBoxComponent>(TEXT("CombatCollision"));
+
 	//attach to the custom socket on the enemy
-	CombatCollision->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("EnemySocket"));
+	//commented out in order to test if something else works better
+	//CombatCollision->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("EnemySocket"));
+
+	//try setupattachment instead
+	CombatCollision->SetupAttachment(GetMesh(), FName("EnemySocket"));
 	//set the default state of the attacking bool to false
 	bAttacking = false;
 
@@ -77,6 +82,14 @@ AEnemy::AEnemy()
 	CombatCollision->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
 	//and finally allow it to respond to the pawn channel during overlap
 	CombatCollision->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Overlap);
+
+	//set default movement state to idle
+	EnemyMovementStatus = EEnemyMovementStatus::EMS_Idle;
+	//set death delay here
+	//currently set to a low amount so that it can be seen quickly whilst testing
+	DeathDelay = 5.0f;
+
+
 
 }
 
@@ -93,6 +106,8 @@ void AEnemy::BeginPlay()
 	//bind an overlap event to the components used in overlap begin and end
 	AgroSphere->OnComponentBeginOverlap.AddDynamic(this, &AEnemy::AgroSphereOnOverlapBegin);
 	AgroSphere->OnComponentEndOverlap.AddDynamic(this, &AEnemy::AgroSphereOnOverlapEnd);
+	//make it ignore the world dynamic channel
+	AgroSphere->SetCollisionResponseToChannel(ECollisionChannel::ECC_WorldDynamic, ECollisionResponse::ECR_Ignore);
 
 	//bind an overlap event for the combat sphere, the box for when you're in range of enemy attacks
 	CombatSphere->OnComponentBeginOverlap.AddDynamic(this, &AEnemy::CombatSphereOnOverlapBegin);
@@ -101,6 +116,7 @@ void AEnemy::BeginPlay()
 	//bind overlap events for the chase sphere
 	ChaseSphere->OnComponentBeginOverlap.AddDynamic(this, &AEnemy::ChaseSphereOnOverlapBegin);
 	ChaseSphere->OnComponentEndOverlap.AddDynamic(this, &AEnemy::ChaseSphereOnOverlapEnd);
+	ChaseSphere->SetCollisionResponseToChannel(ECollisionChannel::ECC_WorldDynamic, ECollisionResponse::ECR_Ignore);
 
 	//set an event for the combat collision event
 	CombatCollision->OnComponentBeginOverlap.AddDynamic(this, &AEnemy::CombatOnOverlapBegin);
@@ -120,8 +136,12 @@ void AEnemy::BeginPlay()
 	//and finally allow it to respond to the pawn channel during overlap
 	//CombatCollision2->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Overlap);
 
-	
-	
+	//make it so the mesh and capsule component stops colliding and obsucuring the camera
+	GetMesh()->SetCollisionResponseToChannel(ECollisionChannel::ECC_Camera, ECollisionResponse::ECR_Ignore);
+	GetCapsuleComponent()->SetCollisionResponseToChannel(ECollisionChannel::ECC_Camera, ECollisionResponse::ECR_Ignore);
+
+
+
 }
 
 // Called every frame
@@ -141,8 +161,8 @@ void AEnemy::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 //the function for when the player enters the agro range of the enemy
 void AEnemy::AgroSphereOnOverlapBegin(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
 {
-	//if something is overlapping check to make sure it's valid
-	if (OtherActor)
+	//if something is overlapping check to make sure it's valid, and the enemy is alive
+	if (OtherActor && Alive())
 	{
 		//cast to Main
 		AMain* Main = Cast<AMain>(OtherActor);
@@ -164,8 +184,8 @@ void AEnemy::AgroSphereOnOverlapEnd(UPrimitiveComponent* OverlappedComponent, AA
 //the function for when the player is in the attacking range of the enemy
 void AEnemy::CombatSphereOnOverlapBegin(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult)
 {
-	//if something is overlapping check to make sure it's valid
-	if (OtherActor)
+	//if something is overlapping check to make sure it's valid and the enemy is alive
+	if (OtherActor && Alive())
 	{
 		//cast to main
 		AMain* Main = Cast<AMain>(OtherActor);
@@ -185,8 +205,17 @@ void AEnemy::CombatSphereOnOverlapBegin(UPrimitiveComponent* OverlappedComponent
 			//replaced with the attack function, which contains this
 			//SetEnemyMovementStatus(EEnemyMovementStatus::EMS_Attacking);
 
-			//call the attack function
-			Attack();
+			//set the HasCombatTarget boolean to true
+			Main->SetHasCombatTarget(true);
+
+			//call the player function to find the combat target
+			Main->UpdateCombatTarget();
+
+			//get a random variable between the min and max attack delays
+			float AttackTime = FMath::FRandRange(AttackTimeMin, AttackTimeMax);
+			//set a timer with this new variable, and use it to call the attack function
+			GetWorldTimerManager().SetTimer(AttackTimer, this, &AEnemy::Attack, AttackTime);
+			//then continue to attack
 		}
 	}
 }
@@ -194,23 +223,14 @@ void AEnemy::CombatSphereOnOverlapBegin(UPrimitiveComponent* OverlappedComponent
 //the function for when the player leaves the attacking range of the enemy
 void AEnemy::CombatSphereOnOverlapEnd(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)
 {
-	//if something is about to stop overlapping
-	if (OtherActor)
+	//if something is about to stop overlapping and the components
+	if (OtherActor && OtherComp)
 	{
 		//cast to main
 		AMain* Main = Cast<AMain>(OtherActor);
 		//if Main is now valid
 		if (Main)
 		{
-			//so that if the player is still in combat with other enemies, we don't reset the combat target to nothing
-			if (Main->CombatTarget == this)
-			{
-				//set the player target to nothing
-				Main->SetCombatTarget(nullptr);
-			}
-
-			
-
 
 			//set the combat overlap bool to false
 			bOverlappingCombatSphere = false;
@@ -223,15 +243,34 @@ void AEnemy::CombatSphereOnOverlapEnd(UPrimitiveComponent* OverlappedComponent, 
 			MoveToTarget(Main);
 			*/
 
-			//if the enemy movement status is not equal to attacking
-			if (EnemyMovementStatus != EEnemyMovementStatus::EMS_Attacking)
+			//then call move to target
+			MoveToTarget(Main);
+			//set combat target to null
+			CombatTarget = nullptr;
+
+			//if the target is set to this enemy
+			if (Main->CombatTarget == this)
 			{
-				//then call move to target
-				MoveToTarget(Main);
-				//set combat target to null
-				CombatTarget = nullptr;
-				
+				//make sure the main player knows this is no longer a target
+				Main->SetCombatTarget(nullptr);
+				Main->bHasCombatTarget = false;
+				//call the function to see if the player needs to find a new target
+				Main->UpdateCombatTarget();
 			}
+			//if the main is valid
+			if (Main->MainPlayerController)
+			{
+				//cast to get the skeletal mesh of the player
+				USkeletalMeshComponent* MainMesh = Cast<USkeletalMeshComponent>(OtherComp);
+				//if the player's mesh is the object stopping overlapping with the enemy
+				if (MainMesh)
+				{
+					//call the remove enemy health bar function
+					Main->MainPlayerController->RemoveEnemyHealthbar();
+				}
+
+			}
+
 			GetWorldTimerManager().ClearTimer(AttackTimer);
 		}
 	}
@@ -257,6 +296,23 @@ void AEnemy::ChaseSphereOnOverlapEnd(UPrimitiveComponent* OverlappedComponent, A
 		{
 			//set the enemy movement status to idle and stop it chasing the player who is now too far away
 			SetEnemyMovementStatus(EEnemyMovementStatus::EMS_Idle);
+
+			//check for the main player controller
+			if (Main->MainPlayerController)
+			{
+
+				//set the sethascombattarget boolean to false
+				Main->SetHasCombatTarget(false);
+
+				//call the update combat target function
+				Main->UpdateCombatTarget();
+				//so that if the player is still in combat with other enemies, we don't reset the combat target to nothing
+				if (Main->CombatTarget == this)
+				{
+					//set the player target to nothing
+					Main->SetCombatTarget(nullptr);
+				}
+			}
 		}
 	}
 }
@@ -349,7 +405,7 @@ void AEnemy::CombatOnOverlapBegin(UPrimitiveComponent* OverlappedComponent, AAct
 					//activate the particle emitter where the claw attack collides with the player then destroy the particles after playing
 					UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), Main->HitParticles, SocketLocation, FRotator(0.f), false);
 				}
-				
+
 			}
 			//if the player has a hit sound effect attached to it
 			if (Main->HitSound)
@@ -366,7 +422,7 @@ void AEnemy::CombatOnOverlapBegin(UPrimitiveComponent* OverlappedComponent, AAct
 		}
 
 	}
-	
+
 }
 
 
@@ -383,7 +439,7 @@ void AEnemy::ActivateCollision()
 	if (SwingSound)
 	{
 		//play the sound cue
-		UGameplayStatics::PlaySound2D(this, SwingSound);	
+		UGameplayStatics::PlaySound2D(this, SwingSound);
 
 	}
 }
@@ -396,36 +452,39 @@ void AEnemy::DeactivateCollision()
 
 void AEnemy::Attack()
 {
-	
-	//check to get the AI controller
-	if (AIController)
+	//if the enemy is alive
+	if (Alive())
 	{
-		//first stop the movement of the enemy
-		AIController->StopMovement();
-		//set the enemy movement status to attacking
-		SetEnemyMovementStatus(EEnemyMovementStatus::EMS_Attacking);
-		//check to make sure that the enemy is not already attacking
-		if (!bAttacking)
+		//check to get the AI controller
+		if (AIController)
 		{
+			//first stop the movement of the enemy
+			AIController->StopMovement();
+			//set the enemy movement status to attacking
+			SetEnemyMovementStatus(EEnemyMovementStatus::EMS_Attacking);
+			//check to make sure that the enemy is not already attacking
+			if (!bAttacking)
+			{
 
-			//set the attacking bool to true
-			bAttacking = true;
-			//get the animation instance
-			UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
-			//check to make sure it has the animation instance
-			if (AnimInstance)
-			{
-				//play the attack animation from the enemy animation montage at 1.15x the normal speed
-				AnimInstance->Montage_Play(CombatMontage, 1.15f);
-				//to play the correct part of the montage
-				AnimInstance->Montage_JumpToSection(FName("Attack"), CombatMontage);
+				//set the attacking bool to true
+				bAttacking = true;
+				//get the animation instance
+				UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+				//check to make sure it has the animation instance
+				if (AnimInstance)
+				{
+					//play the attack animation from the enemy animation montage at 1.15x the normal speed
+					AnimInstance->Montage_Play(CombatMontage, 1.15f);
+					//to play the correct part of the montage
+					AnimInstance->Montage_JumpToSection(FName("Attack"), CombatMontage);
+				}
+				//check for the sound cue for the attack
+				/*if (SwingSound)
+				{
+					//play the sound cue
+					UGameplayStatics::PlaySound2D(this, SwingSound);
+				}*/
 			}
-			//check for the sound cue for the attack
-			/*if (SwingSound)
-			{
-				//play the sound cue
-				UGameplayStatics::PlaySound2D(this, SwingSound);
-			}*/
 		}
 	}
 
@@ -438,7 +497,7 @@ void AEnemy::AttackEnd()
 	bAttacking = false;
 
 	if (bOverlappingCombatSphere)
-	{	
+	{
 		//get a random variable between the min and max attack delays
 		float AttackTime = FMath::FRandRange(AttackTimeMin, AttackTimeMax);
 		//set a timer with this new variable, and use it to call the attack function
@@ -446,7 +505,8 @@ void AEnemy::AttackEnd()
 		//then continue to attack
 		UE_LOG(LogTemp, Warning, TEXT("Attack End Called()"));
 	}
-	
+
+
 }
 
 //Take Damage 
@@ -457,8 +517,8 @@ float AEnemy::TakeDamage(float DamageAmount, struct FDamageEvent const & DamageE
 	{
 		//remove the health
 		Health -= DamageAmount;
-		//call the death function
-		Die();
+		//call the death function and find what caused it to be called
+		Die(DamageCauser);
 	}
 	//otherwise
 	else
@@ -470,7 +530,7 @@ float AEnemy::TakeDamage(float DamageAmount, struct FDamageEvent const & DamageE
 	return DamageAmount;
 }
 
-void AEnemy::Die()
+void AEnemy::Die(AActor* Causer)
 {
 	//create a reference to the anim instance
 	UAnimInstance*AnimInstance = GetMesh()->GetAnimInstance();
@@ -478,10 +538,10 @@ void AEnemy::Die()
 	if (AnimInstance && CombatMontage)
 	{
 		//then play the combat montage
-		AnimInstance->Montage_Play(CombatMontage, 10.f);
+		AnimInstance->Montage_Play(CombatMontage, 1.0f);
 		//play the death section of the montage
-		AnimInstance->Montage_JumpToSection(FName("Death"));
-				
+		AnimInstance->Montage_JumpToSection(FName("Death"), CombatMontage);
+
 	}
 	//set the enemy movement status to dead
 	SetEnemyMovementStatus(EEnemyMovementStatus::EMS_Dead);
@@ -491,5 +551,37 @@ void AEnemy::Die()
 	CombatSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
+	//cast to the player to get a reference to find out if it was the player that killed the enemy
+	AMain* Main = Cast<AMain>(Causer);
+	//if it was the player that killed the enemy
+	if (Main)
+	{
+		//call the update target function in the main player script
+		Main->UpdateCombatTarget();
+	}
 
 }
+
+void AEnemy::DeathEnd()
+{
+	//pause the animations and stop the skeleton from updating after death
+	GetMesh()->bPauseAnims = true;
+	GetMesh()->bNoSkeletonUpdate = true;
+
+	//set a timer to call the disappear function and destroy the enemy
+	GetWorldTimerManager().SetTimer(DeathTimer, this, &AEnemy::Disappear, DeathDelay);
+
+}
+
+bool AEnemy::Alive()
+{
+	//return the enemy movement status and check that it is not equal to EMS Dead
+	return GetEnemyMovementStatus() != EEnemyMovementStatus::EMS_Dead;
+}
+
+void AEnemy::Disappear()
+{
+	Destroy();
+}
+
+
