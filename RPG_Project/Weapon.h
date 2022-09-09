@@ -14,7 +14,6 @@ enum class EWeaponState :uint8
 	EWS_Pickup UMETA(DisplayName = "Pickup"),
 	//when the weapon is picked up and equipped
 	EWS_Equipped UMETA(DisplayName = "Equipped"),
-
 	//default max value just for safety
 	EWS_Max UMETA(DisplayName = "DefaultMax")
 };
