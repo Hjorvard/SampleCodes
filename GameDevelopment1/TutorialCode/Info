@@ -1,0 +1,3 @@
+Below are the scripts used so far, all of them handle the tutorial part of the game, 
+with almost all of the code planned to be used in the rest of the game
+I chose to do separate scripts for the tutorial to keep the main one with less clutter
